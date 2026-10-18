@@ -1,6 +1,16 @@
 package com.mangostudios.orbit
 
+import android.app.Activity
+import android.net.Uri
 import android.view.ViewGroup
+import android.widget.FrameLayout
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.ui.platform.LocalView
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
@@ -39,6 +49,8 @@ import androidx.compose.material.icons.rounded.MoreVert
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.VisibilityOff
+import androidx.compose.material.icons.rounded.Warning
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
@@ -114,6 +126,7 @@ fun BrowserScreen(browser: Browser) {
                             WebPage(tab)
                         }
                     }
+                    tab.certBlocked?.let { CertBlocked(it) }
                     ProgressLine(tab)
                 }
                 PageGlow(trigger = tab.glowPulse, hue = hue, cornerRadius = PageRadius, modifier = Modifier.testTag("page-glow"))
@@ -126,6 +139,63 @@ fun BrowserScreen(browser: Browser) {
             exit = fadeOut(tween(150)) + scaleOut(targetScale = 1.04f),
         ) {
             TabSwitcher(browser)
+        }
+        browser.fullscreen?.let { FullscreenHost(it) { browser.exitFullscreen() } }
+        browser.prompt?.let { PromptDialog(browser, it) }
+    }
+}
+
+/** A page's fullscreen video: edge to edge, system bars hidden until swiped in, back to leave. */
+@Composable
+private fun FullscreenHost(fs: FullscreenView, onExit: () -> Unit) {
+    BackHandler(onBack = onExit)
+    val view = LocalView.current
+    DisposableEffect(fs) {
+        val window = (view.context as? Activity)?.window
+        val controller = window?.let { WindowCompat.getInsetsController(it, view) }
+        controller?.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+        controller?.hide(WindowInsetsCompat.Type.systemBars())
+        onDispose { controller?.show(WindowInsetsCompat.Type.systemBars()) }
+    }
+    AndroidView(
+        factory = {
+            FrameLayout(it).apply {
+                setBackgroundColor(android.graphics.Color.BLACK)
+                (fs.view.parent as? ViewGroup)?.removeView(fs.view)
+                addView(fs.view, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+            }
+        },
+        onRelease = { it.removeAllViews() },
+        modifier = Modifier.fillMaxSize().background(Color.Black),
+    )
+}
+
+@Composable
+private fun PromptDialog(browser: Browser, prompt: Prompt) {
+    val context = LocalContext.current
+    val dismiss = { browser.prompt = null }
+    when (prompt) {
+        is Prompt.OpenExternal -> AlertDialog(
+            onDismissRequest = dismiss,
+            title = { Text(prompt.appLabel?.let { "Open in $it?" } ?: "Open in another app?") },
+            text = { Text("${prompt.description}\nOrbit only opens other apps when you say so.") },
+            confirmButton = { TextButton(onClick = { dismiss(); External.open(context, prompt.intent) }) { Text("Open") } },
+            dismissButton = { TextButton(onClick = dismiss) { Text("Cancel") } },
+        )
+        is Prompt.ConfirmDownload -> {
+            val d = prompt.download
+            AlertDialog(
+                onDismissRequest = dismiss,
+                title = { Text("Download file?") },
+                text = {
+                    Text(
+                        listOfNotNull(d.fileName, d.sizeLabel, Uri.parse(d.url).host?.let { "from $it" }).joinToString(" · ") +
+                            if (d.fromPrivateTab) "\n\nIt will be saved to Downloads, which isn't private." else ""
+                    )
+                },
+                confirmButton = { TextButton(onClick = { dismiss(); browser.startDownload(d) }) { Text("Download") } },
+                dismissButton = { TextButton(onClick = dismiss) { Text("Cancel") } },
+            )
         }
     }
 }
@@ -142,6 +212,25 @@ private fun WebPage(tab: Tab) {
         modifier = Modifier.fillMaxSize(),
         onRelease = { wv -> (wv.parent as? ViewGroup)?.removeView(wv) },
     )
+}
+
+/** Shown instead of a page whose certificate was rejected. There is no "proceed anyway". */
+@Composable
+private fun CertBlocked(host: String) {
+    Column(
+        Modifier.fillMaxSize().background(Night).padding(32.dp),
+        verticalArrangement = Arrangement.Center,
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Icon(Icons.Rounded.Warning, null, tint = Color(0xFFFFB347), modifier = Modifier.size(44.dp))
+        Spacer(Modifier.height(14.dp))
+        Text("Not a secure connection", color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.SemiBold)
+        Spacer(Modifier.height(8.dp))
+        Text(
+            "$host sent a certificate Orbit can't trust (expired, wrong name or self-signed), so the page wasn't loaded.",
+            color = Color.White.copy(alpha = 0.75f), fontSize = 14.sp, textAlign = TextAlign.Center,
+        )
+    }
 }
 
 /** A thin line in the page's color across the top while it loads. */
@@ -219,6 +308,7 @@ private fun AddressBar(tab: Tab, onGo: (String) -> Unit) {
         verticalAlignment = Alignment.CenterVertically,
     ) {
         val leading = when {
+            tab.certBlocked != null && !tab.showingStart -> Icons.Rounded.Warning
             tab.isPrivate -> Icons.Rounded.VisibilityOff
             !editing && tab.url?.startsWith("https://") == true && !tab.showingStart -> Icons.Rounded.Lock
             else -> Icons.Rounded.Search
