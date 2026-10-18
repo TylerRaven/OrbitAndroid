@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="orbit_night">#FF0B0D14</color>
+    <color name="orbit_accent">#FF4078FF</color>
+    <color name="orbit_accent_light">#FF5CB8FF</color>
+</resources>
